@@ -1,0 +1,162 @@
+# ==========================================
+# Environment Variables & Secrets (Global)
+# ==========================================
+.env
+.env.*
+!.env.example
+server/.env
+server/.env.*
+frontend/.env
+frontend/.env.*
+*.pem
+*.key
+
+# ==========================================
+# Python / Server (server/)
+# ==========================================
+# Virtual environments
+myenv/
+venv/
+.venv/
+env/
+
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# C extensions & Distribution / packaging
+*.so
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Celery, Redis & Local Databases
+celerybeat-schedule*
+*.db
+*.sqlite
+*.sqlite3
+dump.rdb
+
+# Server Generated Media & Runtime Files
+# (Uncomment any of these if they contain static assets you want tracked in Git)
+server/audio/*
+!server/audio/.gitkeep
+server/videos/*
+!server/videos/.gitkeep
+server/images/*
+!server/images/.gitkeep
+server/video_assets/*
+!server/video_assets/.gitkeep
+server/json/*
+!server/json/.gitkeep
+
+# Logs & Scratch files
+*.log
+npm-debug.log*
+server/plan.txt
+
+# ==========================================
+# Flutter / Dart / Mobile (frontend/)
+# ==========================================
+# Miscellaneous
+*.class
+*.lock
+!frontend/pubspec.lock
+*.pyc
+*.swp
+.DS_Store
+.atom/
+.build/
+.buildlog/
+.history
+.svn/
+migrate_working_dir/
+
+# IntelliJ / Android Studio / VS Code
+*.iml
+*.ipr
+*.iws
+.idea/
+.vscode/
+
+# Flutter/Dart/Pub related
+**/doc/api/
+**/ios/Flutter/.last_build_id
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.pub-cache/
+.pub/
+frontend/build/
+build/
+
+# Android / Gradle
+**/android/**/gradle-wrapper.jar
+**/android/.gradle
+**/android/captures/
+**/android/gradlew
+**/android/gradlew.bat
+**/android/local.properties
+**/android/**/GeneratedPluginRegistrant.java
+**/android/key.properties
+*.jks
+*.keystore
+
+# iOS / macOS / CocoaPods
+**/ios/**/*.mode1v3
+**/ios/**/*.mode2v3
+**/ios/**/*.moved-aside
+**/ios/**/*.pbxuser
+**/ios/**/*.perspectivev3
+**/ios/**/*sync/
+**/ios/**/.sconsign.dblite
+**/ios/**/.tags*
+**/ios/**/.vagrant/
+**/ios/**/DerivedData/
+**/ios/**/Icon?
+**/ios/**/Pods/
+**/ios/**/.symlinks/
+**/ios/**/profile
+**/ios/**/xcuserdata
+**/ios/.generated/
+**/ios/Flutter/App.framework
+**/ios/Flutter/Flutter.framework
+**/ios/Flutter/Flutter.podspec
+**/ios/Flutter/Generated.xcconfig
+**/ios/Flutter/ephemeral/
+**/ios/Flutter/app.flx
+**/ios/Flutter/app.zip
+**/ios/Flutter/flutter_assets/
+**/ios/Flutter/flutter_export_environment.sh
+**/ios/ServiceDefinitions.json
+**/ios/Runner/GeneratedPluginRegistrant.*
+
+# Linux / Windows / Web builds
+**/linux/flutter/ephemeral/
+**/windows/flutter/ephemeral/
+**/macos/Flutter/ephemeral/
+
+# ==========================================
+# OS & Editor Defaults
+# ==========================================
+.DS_Store
+Thumbs.db
+*~
+
+# AI / ML Model Weights
+server/models/*.onnx
+server/models/*.bin
+server/models/*.pt
