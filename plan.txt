@@ -1,0 +1,7 @@
+Scrolz (Flutter + FastAPI) - build plan
+1. Full schema/data model for the app
+2. API helper functions (Flutter api_service + FastAPI routers)
+3. Auth (signup, login, token storage, protected routes)
+4. All UI code, no dummy data, wired to the API
+5. Test the app end to end
+Notes: StyleConfig for all colors, screens in lib/screens/*, shared widgets in lib/widgets/

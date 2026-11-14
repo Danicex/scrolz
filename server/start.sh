@@ -15,6 +15,7 @@ CELERY_PID=$!
 
 # # Stop both processes when the script exits
 # trap 'kill $FASTAPI_PID $CELERY_PID 2>/dev/null' EXIT INT TERM
+# pkill -f "celery -A celery_app" && pkill -f "uvicorn main:app"
 
 # # Wait for both processes
 # wait

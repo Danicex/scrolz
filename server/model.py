@@ -24,7 +24,7 @@ class Project(SQLModel, table=True):
     json_path: str
     user_id: int = Field(foreign_key="users.id", index=True)
     cover: Optional[str] = None
-    video_path: Optional[str] = None  # set when the video pipeline finishes
+    video_path: Optional[str] = None 
     created_at: datetime = Field(default_factory=now)
     updated_at: datetime = Field(default_factory=now)
 
@@ -41,10 +41,9 @@ class Chunk(SQLModel, table=True):
     key: str  # "chunk_1", "chunk_2", ...
     text: str
     summarized_text: Optional[str] = None
-    audio: Optional[str] = None  # path to the wav
-    # [{"question": "...", "options": ["...", ...], "answer": "B"}, ...]
+    audio: Optional[str] = None  
     quiz: List[dict] = Field(default_factory=list, sa_column=Column(JSON))
-    project_name: Optional[str] = None  # name used for files (title + time)
+    project_name: Optional[str] = None  
     video_url: Optional[str] = None
     project: Optional[Project] = Relationship(back_populates="chunks")
     

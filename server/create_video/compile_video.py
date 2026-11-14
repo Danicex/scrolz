@@ -7,11 +7,14 @@ import re
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-
+from sqlmodel import Session, select
 from config import BG_SOUND_DIR, IMAGES_DIR, OUTPUT_VIDEO_DIR, VIDEO_ASSET
 from create_video.generate_caption import create_caption_clips
 from create_video.get_visuals import get_visuals
 from utils.progress import no_progress
+from pathlib import Path
+from model import Chunk, Project 
+from database import engine 
 
 log = logging.getLogger(__name__)
 
@@ -368,10 +371,46 @@ def compile_video(json_path, progress=None):
             ffmpeg(["-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", "-movflags", "+faststart", combined])
 
     progress(STAGE, "rendering", msg=f"done: {len(videos)} video(s) in {out_dir}", fraction=1.0)
+    
+    with Session(engine) as session:
+        db_result = update_chunk_video_url(project_name, session)
+    
     return {
-        "dir": out_dir,  # folder with one mp4 per chunk
-        "videos": videos,  # {chunk key: path}
-        "combined": combined,  # only when COMBINE_ALL is True
-        "failed": failed,  # {chunk key: error}, empty when everything worked
+        "dir": out_dir,  
+        "videos": videos, 
+        "combined": combined,  
+        "failed": failed, 
         "status": not failed,
+        "db": db_result,
     }
+    
+
+
+VIDEO_URL_PREFIX = "/videos"
+
+def safe_name(key) -> str:
+    return re.sub(r"[^\w.-]+", "_", str(key))
+
+def update_chunk_video_url(project_name: str, session: Session) -> dict:
+    project = session.exec(select(Project).where(Project.name == project_name)).first()
+    if not project:
+        raise ValueError(f"Project '{project_name}' not found")
+
+    video_dir = Path(OUTPUT_VIDEO_DIR) / project_name
+    if not video_dir.is_dir():
+        raise FileNotFoundError(f"Video directory not found: {video_dir}")
+
+    chunks = session.exec(select(Chunk).where(Chunk.project_id == project.id)).all()
+
+    updated, missing = [], []
+    for chunk in chunks:
+        filename = f"{safe_name(chunk.key)}.mp4"
+        if not (video_dir / filename).is_file():
+            missing.append(chunk.key)
+            continue
+        chunk.video_url = f"{VIDEO_URL_PREFIX}/{project_name}/{filename}"
+        session.add(chunk)
+        updated.append(chunk.key)
+
+    session.commit()
+    return {"updated": updated, "missing_videos": missing}

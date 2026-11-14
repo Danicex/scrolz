@@ -18,6 +18,8 @@ def read_root():
     return {"Hello": "harness"}
 
 app.mount("/uploads", StaticFiles(directory="process_pdf"), name="pdf uploads")
+app.mount("/videos", StaticFiles(directory="videos"), name="output videos")
+
 app.include_router(user.router)
 app.include_router(project.router)
 app.include_router(library.router)
