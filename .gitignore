@@ -57,6 +57,7 @@ server/audio/*
 server/videos/*
 !server/videos/.gitkeep
 server/images/*
+server/process_pdf/*
 !server/images/.gitkeep
 server/video_assets/*
 !server/video_assets/.gitkeep
