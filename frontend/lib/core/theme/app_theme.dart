@@ -4,13 +4,12 @@ import 'package:flutter/material.dart';
 class AppColors {
   AppColors._();
 
-  
   static const Color background    = Color(0xFF0C0C0B);
   static const Color surface       = Color(0xFF171716);
   static const Color surfaceLight  = Color(0xFF232320);
   static const Color card          = Color(0xFF1D1D1B);
-  static const Color accent        = Color.fromARGB(255, 65, 0, 228); // lime green
-  static const Color accentDim     = Color.fromARGB(255, 162, 231, 0); // olive (selected chips)
+  static const Color accent        = Color(0xFFD7F544); // lime green
+  static const Color accentDim     = Color(0xFF3D4A1E); // olive (selected chips)
   static const Color textPrimary   = Color(0xFFF2F2EC);
   static const Color textSecondary = Color(0xFF9B9B92);
   static const Color divider       = Color(0xFF2B2B28);
