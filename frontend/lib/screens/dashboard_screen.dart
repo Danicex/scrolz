@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 import '../core/theme/app_theme.dart';
 import 'chat_screen.dart';
 import 'feed_screen.dart';
-import 'library_screen.dart';
+import 'library/library_screen.dart';
 import 'profile_screen.dart';
 import 'upload_screen.dart';
 
@@ -99,7 +99,6 @@ class _AppHeader extends StatelessWidget {
     );
   }
 }
-
 /// Pill-shaped bottom navigation bar.
 class _BottomNav extends StatelessWidget {
   const _BottomNav({required this.currentIndex, required this.onTap});
@@ -108,37 +107,43 @@ class _BottomNav extends StatelessWidget {
   final ValueChanged<int> onTap;
 
   static const _icons = [
-    Icons.layers_outlined,     // feed
-    Icons.menu_book_outlined,  // library
-    Icons.add,                 // upload
-    Icons.history,             // activity / recent
-    Icons.person_outline,      // profile
+    Icons.layers_outlined,          // feed
+    Icons.local_library_outlined,   // library (changed)
+    Icons.add,                      // upload
+    Icons.auto_awesome_outlined,    // ai (changed from history)
+    Icons.person_outline,           // profile
   ];
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
-      padding: const EdgeInsets.symmetric(vertical: 10),
+      // 1. Reduced outer margins slightly and tightened vertical padding
+      margin: const EdgeInsets.fromLTRB(24, 0, 24, 12), 
+      padding: const EdgeInsets.symmetric(vertical: 6), 
       decoration: BoxDecoration(
         color: AppColors.surface,
-        borderRadius: BorderRadius.circular(40),
+        borderRadius: BorderRadius.circular(32), // Adjusted radius to match smaller height
       ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: List.generate(_icons.length, (i) {
           final selected = i == currentIndex;
           final isCenter = i == 2;
-          final icon = Icon(_icons[i],
-              size: isCenter ? 30 : 26,
-              color: selected ? Colors.black : AppColors.textPrimary);
+          final icon = Icon(
+            _icons[i],
+            // 2. Reduced icon sizes
+            size: isCenter ? 24 : 20, 
+            color: selected ? Colors.black : AppColors.textPrimary,
+          );
+
           return GestureDetector(
             onTap: () => onTap(i),
             behavior: HitTestBehavior.opaque,
             child: AnimatedContainer(
               duration: const Duration(milliseconds: 200),
-              width: isCenter ? 58 : 52,
-              height: isCenter ? 58 : 52,
+              // 3. Reduced circle background width & height
+              width: isCenter ? 44 : 38, 
+              height: isCenter ? 44 : 38, 
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
                 color: selected

@@ -8,6 +8,7 @@ server/.env
 server/.env.*
 frontend/.env
 frontend/.env.*
+frontend/env.json
 *.pem
 *.key
 
