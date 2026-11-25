@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
 import '../core/theme/app_theme.dart';
-import 'chat_screen.dart';
-import 'feed_screen.dart';
+import 'ai_chat/chat_screen.dart';
+import 'feed/feed_screen.dart';
 import 'library/library_screen.dart';
-import 'profile_screen.dart';
-import 'upload_screen.dart';
+import 'profile/profile_screen.dart';
+import 'upload/upload_screen.dart';
 
 /// Holds the app header, all five screens and the custom bottom navigation.
 class DashboardScreen extends StatefulWidget {
@@ -64,41 +64,19 @@ class _AppHeader extends StatelessWidget {
               color: AppColors.accentDim,
               borderRadius: BorderRadius.circular(10),
             ),
-            child: const Icon(Icons.menu_book_outlined,
-                color: AppColors.textPrimary, size: 22),
+            child: Image.asset(
+    'assets/darklogo.png',
+    fit: BoxFit.cover,
+  ),
           ),
           const SizedBox(width: 12),
-          const Text(
-            'Scrolz',
-            style: TextStyle(
-              fontSize: 22,
-              fontWeight: FontWeight.w700,
-              letterSpacing: 0.3,
-            ),
-          ),
-          const Spacer(),
-          IconButton(
-            onPressed: () {},
-            icon: const Icon(Icons.search, size: 26),
-            color: AppColors.textPrimary,
-          ),
-          const CircleAvatar(
-            radius: 18,
-            backgroundColor: AppColors.surfaceLight,
-            child: Text(
-              'JC',
-              style: TextStyle(
-                color: AppColors.accent,
-                fontWeight: FontWeight.w600,
-                fontSize: 13,
-              ),
-            ),
-          ),
+         
         ],
       ),
     );
   }
 }
+
 /// Pill-shaped bottom navigation bar.
 class _BottomNav extends StatelessWidget {
   const _BottomNav({required this.currentIndex, required this.onTap});
@@ -132,7 +110,7 @@ class _BottomNav extends StatelessWidget {
           final icon = Icon(
             _icons[i],
             // 2. Reduced icon sizes
-            size: isCenter ? 24 : 20, 
+            size: isCenter ? 28 : 24, 
             color: selected ? Colors.black : AppColors.textPrimary,
           );
 

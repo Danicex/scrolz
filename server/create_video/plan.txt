@@ -1,0 +1,5 @@
+-take text
+-convert to beats
+-use beat to create caption
+-use beat to get vituals: noun not verb query
+-create 

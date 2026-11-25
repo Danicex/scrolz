@@ -29,7 +29,7 @@ def _now():
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def init_task(task_id: str, task_type: str, **fields):
+def init_task(task_id: str, task_type: str, project_name: str, **fields):
     """Called by the API before the job is queued."""
     payload = {
         "task_type": task_type,
@@ -38,7 +38,7 @@ def init_task(task_id: str, task_type: str, **fields):
         "start_time": _now(),
         "json_path": "",
         "project_id": None,
-        "project_name": "",
+        "project_name": project_name,
         "current": {"stage": "pending", "step": "queued", "chunk": None, "total_chunks": None, "msg": ""},
         "events": [],
         **fields,

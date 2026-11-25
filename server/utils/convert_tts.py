@@ -2,7 +2,7 @@ import os
 import re
 
 import numpy as np
-
+import random
 from config import AUDIO_DIR
 
 MODEL_PATH = "models/kokoro-v1.0.onnx"
@@ -40,7 +40,7 @@ def split_text(text, max_chars=MAX_CHARS):
     return pieces
 
 
-def convert_to_speech(text, filename):
+def convert_to_speech(text, filename, project_name):
     """Text -> wav in audio/. Returns the path."""
     import soundfile as sf
 
@@ -54,6 +54,8 @@ def convert_to_speech(text, filename):
     if not parts:
         raise ValueError(f"No audio generated for {filename!r} (empty text?)")
 
-    out_path = os.path.join(AUDIO_DIR, f"{filename}.wav")
+    out_path = os.path.join(AUDIO_DIR, f"{project_name}_{random.randint(100000, 999999)}", f"{filename}.wav")
+    
+
     sf.write(out_path, np.concatenate(parts), rate)
     return out_path

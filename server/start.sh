@@ -18,4 +18,4 @@ CELERY_PID=$!
 # pkill -f "celery -A celery_app" && pkill -f "uvicorn main:app"
 
 # # Wait for both processes
-# wait
+# wait flutter run --dart-define-from-file=env.json

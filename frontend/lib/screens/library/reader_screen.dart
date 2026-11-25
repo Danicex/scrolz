@@ -4,6 +4,10 @@ import 'package:flutter/material.dart';
 
 import '../../core/utils/api_helper.dart';
 import '../../models/library_models.dart';
+import '../ai_chat/chat_screen.dart'; // adjust if your chat screen lives elsewhere
+import 'listen_to_audio.dart';
+import 'play_video.dart';
+import 'quiz.dart';
 
 enum _ReaderAction {
   audio('Play audio', Icons.play_circle_outline),
@@ -489,6 +493,10 @@ class _ReaderScreenState extends State<ReaderScreen>
       ..showSnackBar(SnackBar(content: Text(msg)));
   }
 
+  void _push(Widget screen) {
+    Navigator.of(context).push(MaterialPageRoute(builder: (_) => screen));
+  }
+
   void _handleAction(_ReaderAction action) {
     final chunk = _chunks[_current];
 
@@ -496,32 +504,70 @@ class _ReaderScreenState extends State<ReaderScreen>
       case _ReaderAction.audio:
         final url = chunk.audioUrl;
         if (url == null) return _toast('No audio for this part yet.');
-        // TODO: play `url` with just_audio / audioplayers.
-        _toast('Play audio: $url');
+        _push(ListenToAudioScreen(
+          mode: AudioMode.audio,
+          title: widget.project.title,
+          coverUrl: widget.project.coverUrl,
+          tracks: [AudioTrack(title: 'Part ${chunk.index}', url: url)],
+        ));
 
       case _ReaderAction.video:
         final url = chunk.videoFullUrl ?? widget.project.videoUrl;
         if (url == null) return _toast('No video available.');
-        // TODO: push a video player screen (video_player / chewie).
-        _toast('Watch video: $url');
+        _push(PlayVideoScreen(
+          title: widget.project.title,
+          url: url,
+        ));
 
       case _ReaderAction.quiz:
         if (chunk.quiz.isEmpty) return _toast('No quiz for this part yet.');
-        // TODO: Navigator.push(QuizScreen(questions: chunk.quiz)).
-        _toast('Quiz with ${chunk.quiz.length} questions');
+        _push(QuizScreen(
+          title: 'Part ${chunk.index} quiz',
+          questions: chunk.quiz,
+        ));
 
       case _ReaderAction.podcast:
-        // TODO: call your podcast endpoint / open podcast player.
-        _toast('Podcast coming soon');
+        // The podcast is every part's audio played back to back.
+        final withAudio = _chunks.where((c) => c.audioUrl != null).toList();
+        if (withAudio.isEmpty) return _toast('No audio available yet.');
+        final start = withAudio.indexWhere((c) => c.index == chunk.index);
+        _push(ListenToAudioScreen(
+          mode: AudioMode.podcast,
+          title: widget.project.title,
+          coverUrl: widget.project.coverUrl,
+          initialIndex: start < 0 ? 0 : start,
+          tracks: [
+            for (final c in withAudio)
+              AudioTrack(title: 'Part ${c.index}', url: c.audioUrl!),
+          ],
+        ));
 
       case _ReaderAction.save:
-        // TODO: e.g. ApiHelper.post('/library/save', body: {'project_id': widget.project.id},
-        //            context: context, successMessage: 'Saved');
-        _toast('Saved');
+        _savePage(chunk);
 
       case _ReaderAction.askAi:
-        // TODO: open chat sheet/screen, pass chunk.id + chunk.text as context.
-        _toast('Ask AI about part ${chunk.index}');
+        _push(ChatScreen(
+          asPage: true,
+          projectId: widget.project.id,
+          chunkId: chunk.id,
+          contextLabel: 'Part ${chunk.index}',
+          contextText: chunk.text,
+        ));
     }
+  }
+
+  // Sends the page the user is on to the backend.
+  Future<void> _savePage(Chunk chunk) async {
+    await ApiHelper.post(
+      '/project/saved',
+      body: {
+        'project_id': widget.project.id,
+        'chunk_id': chunk.id,
+        'chunk_index': chunk.index,
+        'text': chunk.text,
+      },
+      context: context,
+      successMessage: 'Page saved',
+    );
   }
 }

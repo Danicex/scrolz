@@ -23,7 +23,7 @@ def make_name(title):
     return f"{safe}_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
 
 
-def process_pdf(pdf_path, filename, user_id: int, progress=None):
+def process_pdf(pdf_path, filename, user_id: int, task_id: int, progress=None):
     """Extract cover, title, text, images -> chunk -> summary/quiz/audio -> database.
     Returns a dict (title, cover, images, json_path, project_id).
 
@@ -48,7 +48,7 @@ def process_pdf(pdf_path, filename, user_id: int, progress=None):
         # cover image = first page rendered as png
         cover_path = os.path.join(IMAGES_DIR, f"{name}_cover.png")
         doc[0].get_pixmap(dpi=100).save(cover_path)
-
+        
         # text + embedded images
         text, image_paths = "", []
         for page_num, page in enumerate(doc, start=1):
@@ -114,7 +114,7 @@ def save_json(json_path, data):
         json.dump(data, f, indent=2, ensure_ascii=False)
 
 
-def loop_through_chunk(json_path: str, name: str, project_id: int, progress=None) -> int:
+def loop_through_chunk(json_path: str, name: str, project_id: int,project_name: str, progress=None) -> int:
     """Add summary/quiz/audio to every chunk, then insert the chunks into the database.
     The json is saved after every chunk. Returns the number of chunks inserted."""
     progress = progress or no_progress
@@ -134,7 +134,7 @@ def loop_through_chunk(json_path: str, name: str, project_id: int, progress=None
         step(i, 1, key, "quiz")
         chunk["quiz"] = convert_to_quiz(text)
         step(i, 2, key, "audio")
-        chunk["audio"] = convert_to_speech(text, f"{name}_{key}")
+        chunk["audio"] = convert_to_speech(text, f"{key}", project_name)
 
         chunk["project_name"] = name
         save_json(json_path, chunks)

@@ -16,3 +16,5 @@ voxcpm
 soundfile
 numpy
 pydantic
+PyJWT[crypto]
+boto3

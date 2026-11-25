@@ -1,7 +1,7 @@
-"""Downloads stock images/videos (Pixabay) for one chunk.
+"""Downloads one stock image/video (Pixabay) for every beat of a chunk.
 
-Files are saved as video_assets/<asset_name>/0.jpg, 1.mp4, 2.jpg ...
-The number in the file name is the order they appear in the slideshow.
+Beats -> noun-only queries (visual_queries.py) -> Pixabay -> video_assets/<asset_name>/beat_<i>.<ext>
+Returns {beat index: file path}. A beat that found nothing is simply missing from the result.
 """
 import logging
 import os
@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 import requests
 
 from config import PIXABAY_API_KEY, VIDEO_ASSET
-from utils.use_llm import generate_visuals
+from create_video.visual_queries import queries_for_beats
 
 log = logging.getLogger(__name__)
 
@@ -32,34 +32,30 @@ def pixabay_get(url, params):
         return r.json()
 
 
-def find_media(query, kind, orientation):
-    """Search Pixabay. Returns (download_url, extension) or None."""
+def find_media(query, kind, orientation, nth=0):
+    """Search Pixabay. Returns (download_url, extension) or None.
+    nth > 0 takes a later hit, so two beats with the same query don't show the same file."""
     query = query[:100]  # Pixabay allows 100 characters
 
     if kind == "video":
-        data = pixabay_get(PIXABAY + "videos/", {"q": query})
-        hits = data.get("hits", [])
+        hits = pixabay_get(PIXABAY + "videos/", {"q": query}).get("hits", [])
         if not hits:
             return None
-        sizes = hits[0].get("videos", {})
-        # 720p first (small download), then the others
-        for name in ("small", "medium", "tiny", "large"):
+        sizes = hits[nth % len(hits)].get("videos", {})
+        for name in ("medium", "small", "large", "tiny"):  # medium = 1080p-ish, enough for a 1080 wide frame
             if sizes.get(name, {}).get("url"):
                 return sizes[name]["url"], ".mp4"
         return None
 
-    data = pixabay_get(
-        PIXABAY,
-        {
-            "q": query,
-            "image_type": "photo",
-            "orientation": "horizontal" if orientation == "landscape" else "vertical",
-        },
-    )
-    hits = data.get("hits", [])
+    params = {"q": query, "image_type": "photo"}
+    if orientation in ("horizontal", "vertical"):
+        params["orientation"] = orientation
+    hits = pixabay_get(PIXABAY, params).get("hits", [])
+    if not hits and "orientation" in params:  # nothing in that orientation: take any, it is cropped anyway
+        hits = pixabay_get(PIXABAY, {"q": query, "image_type": "photo"}).get("hits", [])
     if not hits:
         return None
-    url = hits[0]["largeImageURL"]  # up to 1280 px
+    url = hits[nth % len(hits)]["largeImageURL"]  # up to 1280 px
     return url, os.path.splitext(urlparse(url).path)[1].lower() or ".jpg"
 
 
@@ -71,28 +67,36 @@ def download(url, path):
                 f.write(block)
 
 
-def get_visuals(text: str, asset_name: str, orientation: str = "landscape") -> bool:
-    """True if at least one file was saved. Never raises for a single bad download."""
+def get_visuals(beats, asset_name: str, orientation: str = "vertical") -> dict:
+    """{beat i: path}. Never raises for a single bad search or download."""
     if not PIXABAY_API_KEY:
         log.warning("PIXABAY_API_KEY is not set, skipping stock visuals")
-        return False
+        return {}
 
     folder = os.path.join(VIDEO_ASSET, asset_name)
     shutil.rmtree(folder, ignore_errors=True)  # no leftovers from an earlier run
     os.makedirs(folder)
 
-    saved = 0
-    for idea in generate_visuals(text):
+    ideas = queries_for_beats(beats)
+    for idea in ideas:
+        log.info("beat %s -> %s (%s)", idea["i"], idea["query"], idea["type"])
+
+    saved, used = {}, {}
+    for idea in ideas:
+        key = (idea["query"], idea["type"])
+        nth = used.get(key, 0)
+        used[key] = nth + 1
         try:
-            found = find_media(idea["query"], idea["type"], orientation)
+            found = find_media(idea["query"], idea["type"], orientation, nth)
             if not found and idea["type"] == "video":
-                found = find_media(idea["query"], "image", orientation)
+                found = find_media(idea["query"], "image", orientation, nth)
             if not found:
                 continue
             url, ext = found
-            download(url, os.path.join(folder, f"{saved}{ext}"))
-            saved += 1
+            path = os.path.join(folder, f"beat_{idea['i']}{ext}")
+            download(url, path)
+            saved[idea["i"]] = path
         except requests.RequestException as e:
             log.warning("visual %r failed: %s", idea["query"], e)
 
-    return saved > 0
+    return saved

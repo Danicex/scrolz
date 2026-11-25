@@ -4,6 +4,10 @@ import 'package:clerk_flutter/clerk_flutter.dart';
 import 'core/theme/app_theme.dart';
 import 'screens/dashboard_screen.dart';
 import 'screens/auth/home_page.dart';
+import '../core/auth/session_gate.dart';
+
+
+
 
 const clerkKey = String.fromEnvironment('CLERK_PUBLISHABLE_KEY');
 
@@ -46,7 +50,7 @@ class MyApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       home: ClerkErrorListener(
         child: ClerkAuthBuilder(
-          signedInBuilder: (context, authState) => const DashboardScreen(),
+          signedInBuilder: (context, authState) => const SessionGate(child: DashboardScreen()),
           signedOutBuilder: (context, authState) => const HomePage(),
         ),
       ),

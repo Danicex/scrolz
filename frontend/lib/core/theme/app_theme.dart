@@ -44,9 +44,9 @@ class AppTheme {
         fillColor: AppColors.surfaceLight,
         hintStyle: const TextStyle(color: AppColors.textSecondary),
         contentPadding:
-            const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+            const EdgeInsets.symmetric(horizontal: 10, vertical: 14),
         border: OutlineInputBorder(
-          borderRadius: BorderRadius.circular(28),
+          borderRadius: BorderRadius.circular(20),
           borderSide: BorderSide.none,
         ),
       ),

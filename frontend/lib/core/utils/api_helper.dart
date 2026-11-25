@@ -22,7 +22,8 @@ class ApiHelper {
   ApiHelper._();
 
   // ---------------------------------------------------------------- config
-  static const String baseUrl = 'https://api.example.com/v1'; // <-- change me
+  static const String baseUrl =
+    String.fromEnvironment('API_BASE_URL', defaultValue: 'http://10.0.2.2:8000');
   static String get mediaBaseUrl => Uri.parse(baseUrl).origin;
   
   static const _tokenKey = 'auth_token';
@@ -82,6 +83,25 @@ class ApiHelper {
   static Future<void> saveToken(String token) async {
     _token = token;
     await _storage.write(key: _tokenKey, value: token);
+  }
+  /// Swap the Clerk session token for your own backend JWT and store it.
+  static Future<ApiResult<String>> exchangeClerkToken(String clerkJwt) async {
+    try {
+      final res = await _dio.post(
+        '/user/session',
+        options: Options(
+          headers: {'Authorization': 'Bearer $clerkJwt'},
+          extra: {'noAuth': true}, // stops the interceptor swapping in the old token
+        ),
+      );
+      final token = res.data['token'] as String;
+      await saveToken(token);
+      return ApiResult.success(token, statusCode: res.statusCode);
+    } on DioException catch (e) {
+      return ApiResult.failure(_mapDioError(e), statusCode: e.response?.statusCode);
+    } catch (_) {
+      return const ApiResult.failure('Could not start your session.');
+    }
   }
 
   static Future<void> clearToken() async {

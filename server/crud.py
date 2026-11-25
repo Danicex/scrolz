@@ -2,18 +2,29 @@ import os
 from typing import Optional
 
 from sqlmodel import Session, select
-
+from database import SessionDep
 from model import Chunk, Project, User, Settings, now
+from model import Chunk, Project, User, UserSettings, UserBilling, UserActivity, now
 
 obj_map = {
     "project": Project,
     "chunk": Chunk,
     "user": User,
-    "settings": Settings,
+    "settings": UserSettings,
+    "billing": UserBilling,
+    "activity": UserActivity,
 }
 # ---------- user ----------
-def create_user(session: Session, email: str):
-    user = User(email=email)
+def get_user_by_clerk_id(session: Session, clerk_id: str):
+    return session.exec(select(User).where(User.clerk_id == clerk_id)).first()
+
+
+def get_user_by_email(session: Session, email: str):
+    return session.exec(select(User).where(User.email == email)).first()
+
+
+def create_user(session: Session, clerk_id: str, email: str, username: Optional[str] = None):
+    user = User(clerk_id=clerk_id, email=email, username=username)
     session.add(user)
     session.commit()
     session.refresh(user)
@@ -53,6 +64,18 @@ def update_project(session: Session, project_id: int, title: str):
     session.commit()
     session.refresh(project)
     return project
+
+def update_chunk_vid_path(session: Session, project_id: int, chunk_id: int, path: str):
+    project = session.get(Project, project_id)
+    chunk = session.get(Chunk, chunk_id)
+    if not project and chunk:
+        return None
+    chunk.video_url = path
+    chunk.updated_at = now()
+    session.add(chunk)
+    session.commit()
+    session.refresh(chunk)
+    return "sucessfully stored video url"
 
 
 def set_video_path(session: Session, project_id: int, video_path: str):
@@ -196,3 +219,49 @@ def get_single_data(obj_id: int, obj_name: str, session: SessionDep):
         select(model_class).where(model_class.id == obj_id)
     ).first()
     return data
+
+# ---------- user-scoped (settings / billing / activity) ----------
+def get_user_settings(session: Session, user_id: int):
+    return session.exec(
+        select(UserSettings).where(UserSettings.user_id == user_id)
+    ).first()
+
+
+def get_or_create_user_settings(session: Session, user_id: int):
+    settings = get_user_settings(session, user_id)
+    if settings:
+        return settings
+    _, settings = create_data("settings", {"user_id": user_id}, session)
+    return settings
+
+
+def get_user_billing(session: Session, user_id: int):
+    return session.exec(
+        select(UserBilling).where(UserBilling.user_id == user_id)
+    ).first()
+
+
+def get_or_create_user_billing(session: Session, user_id: int):
+    billing = get_user_billing(session, user_id)
+    if billing:
+        return billing
+    _, billing = create_data("billing", {"user_id": user_id}, session)
+    return billing
+
+
+def list_user_activities(session: Session, user_id: int, limit: int = 50, offset: int = 0):
+    return session.exec(
+        select(UserActivity)
+        .where(UserActivity.user_id == user_id)
+        .order_by(UserActivity.created_at.desc())
+        .offset(offset)
+        .limit(limit)
+    ).all()
+
+
+def log_activity(session: Session, user_id: int, action: str, status: str = "completed"):
+    """Call this from other endpoints, e.g. log_activity(session, uid, "Generated Video")."""
+    _, activity = create_data(
+        "activity", {"user_id": user_id, "action": action, "status": status}, session
+    )
+    return activity

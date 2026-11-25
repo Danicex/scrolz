@@ -1,39 +1,75 @@
 from datetime import datetime, timedelta, timezone
+from typing import Annotated
+
 import jwt
-from passlib.context import CryptContext
+import requests
 from fastapi import Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import PyJWKClient
 
-SECRET_KEY = "your-super-secret-key-keep-it-safe"  # Store in .env in production
+from config import CLERK_ISSUER, CLERK_SECRET_KEY, JWT_EXPIRE_MINUTES, JWT_SECRET
+
+if not (JWT_SECRET and CLERK_SECRET_KEY and CLERK_ISSUER):
+    raise RuntimeError("Set JWT_SECRET, CLERK_SECRET_KEY and CLERK_ISSUER in .env")
+
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 30
+bearer = HTTPBearer(auto_error=False)
+_jwks = PyJWKClient(f"{CLERK_ISSUER}/.well-known/jwks.json", cache_keys=True)
 
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-oauth2_scheme = OAuth2PasswordBearer(tokenUrl="login")
+_401 = HTTPException(
+    status_code=status.HTTP_401_UNAUTHORIZED,
+    detail="Could not validate credentials",
+    headers={"WWW-Authenticate": "Bearer"},
+)
 
-def verify_password(plain_password, hashed_password):
-    return pwd_context.verify(plain_password, hashed_password)
 
-def get_password_hash(password):
-    return pwd_context.hash(password)
-
-def create_access_token(data: dict):
-    to_encode = data.copy()
-    expire = datetime.now(timezone.utc) + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    to_encode.update({"exp": expire})
-    return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-
-def get_current_user(token: str = Depends(oauth2_scheme)):
-    credentials_exception = HTTPException(
-        status_code=status.HTTP_401_UNAUTHORIZED,
-        detail="Could not validate credentials",
-        headers={"WWW-Authenticate": "Bearer"},
-    )
+# ---------- Clerk side (used once, at login) ----------
+def verify_clerk_token(token: str) -> dict:
+    """Check the signature, expiry and issuer of a Clerk session token."""
     try:
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
-        if username is None:
-            raise credentials_exception
-        return username
+        key = _jwks.get_signing_key_from_jwt(token).key
+        return jwt.decode(
+            token, key, algorithms=["RS256"], issuer=CLERK_ISSUER, leeway=10,
+            options={"require": ["exp", "sub", "iss"], "verify_aud": False},
+        )
     except jwt.PyJWTError:
-        raise credentials_exception
+        raise _401
+
+
+def fetch_clerk_profile(clerk_id: str) -> dict:
+    """Ask Clerk for the user's email and username (trusted, unlike client input)."""
+    r = requests.get(
+        f"https://api.clerk.com/v1/users/{clerk_id}",
+        headers={"Authorization": f"Bearer {CLERK_SECRET_KEY}"},
+        timeout=10,
+    )
+    if r.status_code != 200:
+        raise HTTPException(502, "Could not fetch user from Clerk")
+    data = r.json()
+    primary = data.get("primary_email_address_id")
+    emails = data.get("email_addresses") or []
+    email = next((e["email_address"] for e in emails if e["id"] == primary),
+                 emails[0]["email_address"] if emails else None)
+    if not email:
+        raise HTTPException(400, "Clerk user has no email address")
+    return {"email": email, "username": data.get("username") or email.split("@")[0]}
+
+
+# ---------- your own token (used on every request) ----------
+def create_access_token(user_id: int) -> str:
+    expire = datetime.now(timezone.utc) + timedelta(minutes=JWT_EXPIRE_MINUTES)
+    return jwt.encode({"sub": str(user_id), "exp": expire}, JWT_SECRET, algorithm=ALGORITHM)
+
+
+def get_current_user(creds: HTTPAuthorizationCredentials | None = Depends(bearer)) -> int:
+    """Returns user_id (int) from your own JWT."""
+    if creds is None:
+        raise _401
+    try:
+        payload = jwt.decode(creds.credentials, JWT_SECRET, algorithms=[ALGORITHM])
+        return int(payload["sub"])
+    except (jwt.PyJWTError, KeyError, ValueError):
+        raise _401
+
+
+CurrentUser = Annotated[int, Depends(get_current_user)]

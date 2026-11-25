@@ -15,9 +15,10 @@ app = FastAPI(lifespan=lifespan)
 
 @app.get("/")
 def read_root():
-    return {"Hello": "harness"}
+    return {"Hello": "scrolz"}
 
 app.mount("/uploads", StaticFiles(directory="process_pdf"), name="pdf uploads")
+app.mount("/audio", StaticFiles(directory="audio"), name="audio")
 app.mount("/videos", StaticFiles(directory="videos"), name="output videos")
 
 app.include_router(user.router)

@@ -7,36 +7,33 @@ import re
 import subprocess
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
-from sqlmodel import Session, select
-from config import BG_SOUND_DIR, IMAGES_DIR, OUTPUT_VIDEO_DIR, VIDEO_ASSET
-from create_video.generate_caption import create_caption_clips
-from create_video.get_visuals import get_visuals
-from utils.progress import no_progress
 from pathlib import Path
-from model import Chunk, Project 
-from database import engine 
 
+from PIL import Image, ImageDraw
+from sqlmodel import Session, select
+
+from config import BG_SOUND_DIR, IMAGES_DIR, OUTPUT_VIDEO_DIR, VIDEO_ASSET
+from create_video.beats import make_beats
+from create_video.generate_caption import render_caption
+from create_video.get_visuals import get_visuals
+from create_video.video_templates import get_template
+from database import engine
+from model import Chunk, Project
+from utils.progress import no_progress
+from crud import update_chunk_vid_path
 log = logging.getLogger(__name__)
 
 STAGE = "creating_video"
-SETTINGS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "video_settings.json")
-DEFAULT_TMPL = "video_tmpl_1"  # used when a chunk has no "video_tmpl"
-SLIDE_SECONDS = 2  # every asset (image, gif or video) is shown for 2 sec
-FADE_SECONDS = 0.4  # fade/slide time at the start and end of each slide
+HERE = os.path.dirname(os.path.abspath(__file__))
+SECOND_DIR = os.path.join(HERE, "second_videos")  # clips for a template's "second" region
+DEFAULT_TMPL = "vt_a"  # used when a chunk has no "video_tmpl"
 BG_VOLUME = 0.12
 FPS = 24
+ZOOM_STEP, ZOOM_MAX = 0.0008, 1.12  # slow zoom on still images (per frame, and the most it ever zooms)
 
-# Stacked layout (portrait templates). Every value can be overridden per template in
-# video_settings.json with the keys: slide_height, image_width, caption_width,
-# caption_height, caption_margin (gap between the caption and the bottom edge).
-SLIDE_H = 500  # slideshow strip: full template width x 500, centered vertically
-IMAGE_W = 900  # still images are 900 x 500 inside the strip, videos/gifs fill 1080 x 500
-CAP_W, CAP_H = 1000, 100
-CAP_MARGIN = 120
-
-SEG_PRESET = "ultrafast"  # tiny per-slide clips, joined later without re-encoding
+SEG_PRESET = "ultrafast"  # tiny per-beat clips, joined later without re-encoding
 FINAL_PRESET = "veryfast"  # the one real encode, per chunk
-WORKERS = max(2, (os.cpu_count() or 4) // 2)  # slides rendered in parallel
+WORKERS = max(2, (os.cpu_count() or 4) // 2)  # beat clips rendered in parallel
 FINAL_SHARE = 0.97  # chunks are the first 97% of this stage, joining them the rest
 COMBINE_ALL = False  # True: also join every chunk video into one <project>.mp4 next to the chunk folder
 
@@ -51,20 +48,6 @@ def even(n):
 
 
 # ---------- assets ----------
-def list_assets(asset_name):
-    """Files in video_assets/<asset_name>/ sorted by the number in the name (0, 1, 2 ... 10)."""
-    folder = os.path.join(VIDEO_ASSET, asset_name)
-    if not os.path.isdir(folder):
-        return []
-    files = [os.path.join(folder, f) for f in os.listdir(folder) if f.lower().endswith(IMAGE_EXT + VIDEO_EXT)]
-
-    def number(path):
-        found = re.findall(r"\d+", os.path.basename(path))
-        return int(found[-1]) if found else 0
-
-    return sorted(files, key=number)
-
-
 def pdf_images(project_name):
     """Fallback when no stock visuals: the pictures taken out of the PDF (or its cover)."""
     prefix = f"{project_name}_"
@@ -83,6 +66,12 @@ def bg_tracks():
         for f in sorted(os.listdir(BG_SOUND_DIR))
         if f.lower().endswith(SOUND_EXT)
     ]
+
+
+def second_clips():
+    if not os.path.isdir(SECOND_DIR):
+        return []
+    return [os.path.join(SECOND_DIR, f) for f in sorted(os.listdir(SECOND_DIR)) if f.lower().endswith(VIDEO_EXT)]
 
 
 # ---------- ffmpeg helpers ----------
@@ -135,164 +124,241 @@ def write_concat_list(files, list_path):
             f.write("file '" + os.path.abspath(p).replace("'", "'\\''") + "'\n")
 
 
-# ---------- stage 1: slideshow ----------
-def make_slide(src, dst, d, strip_w, strip_h, image_w):
-    """One asset -> a strip_w x strip_h clip of `d` sec: covers its box (crop the middle), slides in
-    from the right while fading in, slides out to the left while fading out."""
-    is_image = src.lower().endswith(IMAGE_EXT)
-    tw = image_w if is_image else strip_w  # images 900 wide, gifs/videos full width
-    fade = min(FADE_SECONDS, d / 2)
-    shift = strip_w // 4
-    out_start = d - fade
-
-    x = (
-        f"(W-w)/2+if(lt(t,{fade:.3f}),{shift}*(1-t/{fade:.3f}),"
-        f"if(gt(t,{out_start:.3f}),-{shift}*(t-{out_start:.3f})/{fade:.3f},0))"
-    )
-    fc = (
-        f"[1:v]scale={tw}:{strip_h}:force_original_aspect_ratio=increase,crop={tw}:{strip_h},"
-        f"setsar=1,fps={FPS},format=yuv420p,"
-        f"fade=t=in:st=0:d={fade:.3f},fade=t=out:st={out_start:.3f}:d={fade:.3f}[a];"
-        f"[0:v][a]overlay=x='{x}':y=(H-h)/2:shortest=1,format=yuv420p[v]"
-    )
-    loop = ["-loop", "1"] if is_image else ["-stream_loop", "-1"]  # loops gifs/videos that are too short
-    ffmpeg([
-        "-f", "lavfi", "-i", f"color=c=black:s={strip_w}x{strip_h}:r={FPS}:d={d:.3f}",
-        *loop, "-i", src,
-        "-filter_complex", fc, "-map", "[v]", "-an", "-t", f"{d:.3f}",
-        "-c:v", "libx264", "-preset", SEG_PRESET, "-crf", "20", "-g", FPS * 2, dst,
-    ])
+# ---------- template layout ----------
+def pixel_regions(tmpl, w, h):
+    """{"main": (x, y, w, h), ...} in even pixels. Edges are rounded, not sizes, so neighbours never leave a gap."""
+    out = {}
+    for name, b in tmpl["regions"].items():
+        x0, x1 = even(round(b["x"] * w)), even(round((b["x"] + b["w"]) * w))
+        y0, y1 = even(round(b["y"] * h)), even(round((b["y"] + b["h"]) * h))
+        out[name] = (x0, y0, x1 - x0, y1 - y0)
+    return out
 
 
-def make_slideshow(assets, duration, strip_w, strip_h, image_w, tmp, idx, out):
-    """Slides are rendered in parallel (once per distinct asset) and joined without re-encoding."""
-    if not assets:  # nothing to show: plain black strip
-        ffmpeg(["-f", "lavfi", "-i", f"color=c=black:s={strip_w}x{strip_h}:r={FPS}:d={duration:.3f}",
-                "-c:v", "libx264", "-preset", SEG_PRESET, "-pix_fmt", "yuv420p", "-g", FPS * 2, out])
-        return
+def snap_beats(beats, duration):
+    """Gives every beat a whole number of frames (so clips add up to the voice exactly) and drops empty ones."""
+    snapped, prev = [], 0
+    for b in beats:
+        end = round(b["end"] * FPS)
+        frames = end - prev
+        if frames >= 1:
+            snapped.append({**b, "frames": frames})
+            prev = end
+    if snapped:  # the last beat runs to the end of the audio
+        snapped[-1]["frames"] += round(duration * FPS) - prev
+    return snapped
 
-    plan, start, i = [], 0.0, 0
-    while duration - start > 1 / FPS:
-        d = round(min(SLIDE_SECONDS, duration - start), 3)
-        plan.append((assets[i % len(assets)], d))  # fewer assets than needed -> start over
-        start += SLIDE_SECONDS
-        i += 1
 
-    unique = list(dict.fromkeys(plan))  # a repeated asset is only rendered once
-    files = {u: os.path.join(tmp, f"c{idx}_slide{n}.mp4") for n, u in enumerate(unique)}
+def rounded_mask(w, h, radius, path):
+    """White rounded rectangle on black (anti-aliased by drawing 4x bigger)."""
+    k = 4
+    big = Image.new("L", (w * k, h * k), 0)
+    ImageDraw.Draw(big).rounded_rectangle((0, 0, w * k - 1, h * k - 1), radius=radius * k, fill=255)
+    big.resize((w, h), Image.LANCZOS).save(path)
+
+
+# ---------- stage 1: main track (one clip per beat) ----------
+def make_beat_clip(src, frames, rw, rh, dst, n=0):
+    """One beat of the main region: the asset covers rw x rh (middle is cropped), exactly `frames` frames.
+    Stills get a slow zoom (in on even beats, out on odd ones), videos play from the start and loop if short."""
+    enc = ["-an", "-frames:v", frames, "-c:v", "libx264", "-preset", SEG_PRESET, "-crf", "20",
+           "-g", FPS * 2, "-pix_fmt", "yuv420p", dst]
+
+    if src is None:  # nothing found for this beat
+        ffmpeg(["-f", "lavfi", "-i", f"color=c=black:s={rw}x{rh}:r={FPS}", *enc])
+    elif src.lower().endswith(IMAGE_EXT):
+        z = f"min(1+{ZOOM_STEP}*on,{ZOOM_MAX})" if n % 2 == 0 else f"max({ZOOM_MAX}-{ZOOM_STEP}*on,1)"
+        vf = (
+            f"scale={rw * 2}:{rh * 2}:force_original_aspect_ratio=increase,crop={rw * 2}:{rh * 2},"  # 2x so the zoom is smooth
+            f"zoompan=z='{z}':x='iw/2-(iw/zoom/2)':y='ih/2-(ih/zoom/2)':d=1:s={rw}x{rh}:fps={FPS},setsar=1"
+        )
+        ffmpeg(["-loop", "1", "-i", src, "-vf", vf, *enc])
+    else:
+        vf = f"scale={rw}:{rh}:force_original_aspect_ratio=increase,crop={rw}:{rh},setsar=1,fps={FPS}"
+        ffmpeg(["-stream_loop", "-1", "-i", src, "-vf", vf, *enc])
+
+
+def make_main_track(beats, assets, rw, rh, tmp, idx, out):
+    """Beat clips are rendered in parallel (a repeated asset in a row is fine, each beat is its own clip)
+    and joined without re-encoding."""
+    files = [os.path.join(tmp, f"c{idx}_beat{b['i']}.mp4") for b in beats]
+    jobs = [(assets.get(b["i"]), b["frames"], files[n], b["i"]) for n, b in enumerate(beats)]
     with ThreadPoolExecutor(WORKERS) as ex:
-        list(ex.map(lambda u: make_slide(u[0], files[u], u[1], strip_w, strip_h, image_w), unique))
+        list(ex.map(lambda j: make_beat_clip(j[0], j[1], rw, rh, j[2], j[3]), jobs))
 
-    list_path = os.path.join(tmp, f"c{idx}_slides.txt")
-    write_concat_list([files[u] for u in plan], list_path)
+    list_path = os.path.join(tmp, f"c{idx}_main.txt")
+    write_concat_list(files, list_path)
     ffmpeg(["-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", out])
 
 
-# ---------- stage 2: caption video ----------
-def make_caption_video(audio_path, cap_w, cap_h, duration, solid_bar, out):
-    """Silent cap_w x cap_h video with the Whisper captions (your create_caption_clips), on black.
-    Only this small frame goes through moviepy; the voice + bg sound are mixed later by ffmpeg."""
-    from moviepy import ColorClip, CompositeVideoClip  # lazy: only the captions still use moviepy
+def fill_missing(beats, found, fallback):
+    """Every beat gets a visual: if its search found nothing, keep showing the previous beat's visual;
+    before the first one, use the PDF's own pictures (or nothing = black)."""
+    assets, last = {}, None
+    for b in beats:
+        src = found.get(b["i"])
+        if src is None and last is None and fallback:
+            src = fallback[b["i"] % len(fallback)]
+        if src is None:
+            src = last
+        assets[b["i"]] = src
+        last = src
+    return assets
 
-    layers = [ColorClip((cap_w, cap_h), color=(0, 0, 0), duration=duration)]
-    layers += create_caption_clips(audio_path, cap_w, cap_h, duration, solid_bar=solid_bar)
-    clip = CompositeVideoClip(layers, size=(cap_w, cap_h)).with_duration(duration)
+
+# ---------- stage 2: caption pictures (one per beat) ----------
+def make_caption_track(beats, size, style, tmp, idx):
+    """Writes one transparent PNG per beat and a concat list that shows each for its length.
+    Returns the list path (ffmpeg reads it with -f concat)."""
+    cw, ch = size
+    lines = []
+    for b in beats:
+        png = os.path.join(tmp, f"c{idx}_cap{b['i']}.png")
+        render_caption(b["text"], cw, ch, style).save(png)
+        lines.append((png, b["frames"] / FPS))
+
+    list_path = os.path.join(tmp, f"c{idx}_captions.txt")
+    with open(list_path, "w", encoding="utf-8") as f:
+        for png, d in lines:
+            f.write(f"file '{os.path.abspath(png)}'\nduration {d:.5f}\n")
+        f.write(f"file '{os.path.abspath(lines[-1][0])}'\n")  # concat ignores the last duration unless the file repeats
+    return list_path
+
+
+# ---------- stage 3: put the template together ----------
+def probe_has_duration(path):
     try:
-        clip.write_videofile(out, fps=FPS, codec="libx264", audio=False, preset="ultrafast", logger=None)
-    finally:
-        clip.close()
+        return probe_duration(path)
+    except Exception:
+        return 0.0
 
 
-# ---------- stage 3: slideshow + caption + audio ----------
-def merge_chunk(slides, caption, voice, bg, duration, w, h, lay, out, on_progress=None):
-    y_slide = (h - lay["slide_h"]) // 2
-    x_cap = (w - lay["cap_w"]) // 2
-    y_cap = h - lay["cap_h"] - lay["margin"]
+def merge_chunk(tmpl, regions, main, captions, second, voice, bg, duration, out, tmp, idx, on_progress=None):
+    w, h = tmpl["width"], tmpl["height"]
+    mx, my, mw, mh = regions["main"]
+    cx, cy, cw, ch = regions["caption"]
 
+    inputs = ["-f", "lavfi", "-i", f"color=c={tmpl['card_color'].replace('#', '0x')}:s={w}x{h}:r={FPS}:d={duration:.3f}",
+              "-i", main,
+              "-f", "concat", "-safe", "0", "-i", captions]
+    n = 3  # next input number
+
+    chain = []
+    base = "[0:v]"
+    bg_fill = tmpl["caption_style"]["bg"]
+    if bg_fill:
+        chain.append(f"{base}drawbox=x={cx}:y={cy}:w={cw}:h={ch}:color={bg_fill.replace('#', '0x')}:t=fill[b0]")
+        base = "[b0]"
+    chain.append(f"{base}[1:v]overlay={mx}:{my}[b1]")
+
+    last = "[b1]"
+    if second:
+        sx, sy, sw, sh, clip, offset = second
+        inputs += ["-stream_loop", "-1", "-ss", f"{offset:.2f}", "-i", clip]
+        chain.append(
+            f"[{n}:v]scale={sw}:{sh}:force_original_aspect_ratio=increase,crop={sw}:{sh},setsar=1,fps={FPS}[sec]"
+        )
+        chain.append(f"[b1][sec]overlay={sx}:{sy}[b2]")
+        last = "[b2]"
+        n += 1
+
+    chain.append(f"[2:v]fps={FPS},format=rgba[cap]")
+    chain.append(f"{last}[cap]overlay={cx}:{cy}:format=auto[card]")
+
+    radius = tmpl["corner_radius"]
+    if radius > 0:
+        mask = os.path.join(tmp, f"c{idx}_mask.png")
+        rounded_mask(w, h, radius, mask)
+        inputs += ["-f", "lavfi", "-i", f"color=c={tmpl['canvas'].replace('#', '0x')}:s={w}x{h}:r={FPS}:d={duration:.3f}",
+                   "-loop", "1", "-framerate", FPS, "-i", mask]
+        chain.append(f"[{n + 1}:v]format=gray[m]")
+        chain.append(f"[card]format=yuv420p[cy];[cy][m]alphamerge[round]")
+        chain.append(f"[{n}:v][round]overlay=0:0:format=auto,format=yuv420p[v]")
+        n += 2
+    else:
+        chain.append("[card]format=yuv420p[v]")
+
+    inputs += ["-i", voice]
+    voice_n = n
+    n += 1
     audio_fmt = "aformat=sample_rates=44100:channel_layouts=stereo"
     if bg:
-        audio = (
-            f"[2:a]{audio_fmt}[a1];[3:a]{audio_fmt},volume={BG_VOLUME}[a2];"
+        inputs += ["-stream_loop", "-1", "-i", bg]  # bg loops to fill the voice length
+        chain.append(
+            f"[{voice_n}:a]{audio_fmt}[a1];[{n}:a]{audio_fmt},volume={BG_VOLUME}[a2];"
             f"[a1][a2]amix=inputs=2:duration=first:normalize=0[a]"
         )
     else:
-        audio = f"[2:a]{audio_fmt}[a]"
-    fc = (
-        f"[0:v]pad={w}:{h}:0:{y_slide}:black[base];"
-        f"[base][1:v]overlay={x_cap}:{y_cap}:shortest=1,format=yuv420p[v];{audio}"
-    )
-
-    inputs = ["-i", slides, "-i", caption, "-i", voice]
-    if bg:
-        inputs += ["-stream_loop", "-1", "-i", bg]  # bg loops to fill the voice length
+        chain.append(f"[{voice_n}:a]{audio_fmt}[a]")
 
     ffmpeg([
-        *inputs, "-filter_complex", fc, "-map", "[v]", "-map", "[a]", "-t", f"{duration:.3f}",
+        *inputs, "-filter_complex", ";".join(chain), "-map", "[v]", "-map", "[a]", "-t", f"{duration:.3f}",
         "-c:v", "libx264", "-preset", FINAL_PRESET, "-crf", "21", "-r", FPS,
-        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", out,
+        "-c:a", "aac", "-b:a", "192k", "-ar", "44100", "-ac", "2", "-movflags", "+faststart", out,
     ], total=duration, on_progress=on_progress)
 
 
-def layout_for(tmpl, w, h):
-    portrait = h > w
-    slide_h = even(min(tmpl.get("slide_height", SLIDE_H if portrait else h), h))
-    return {
-        "slide_h": slide_h,
-        "image_w": even(min(tmpl.get("image_width", IMAGE_W if portrait else w), w)),
-        "cap_w": even(min(tmpl.get("caption_width", CAP_W), w)),
-        "cap_h": even(min(tmpl.get("caption_height", CAP_H), h)),
-        "margin": int(tmpl.get("caption_margin", CAP_MARGIN)),
-    }
-
-
 # ---------- one chunk ----------
-def build_chunk(key, chunk, settings, project_name, playlist, tmp, progress=no_progress, idx=1, total=1,
-                out_path=None):
-    """Makes the video of ONE chunk. Written to `out_path` (or to the temp dir when not given)."""
+def build_chunk(key, chunk, project_name, playlist, tmp, progress=no_progress, idx=1, total=1, out_path=None):
+    """Makes the video of ONE chunk. Written to `out_path` (or to the temp dir when not given).
+    chunk = {"text", "audio", "video_tmpl" (optional), "words" (optional word timestamps from your TTS)}"""
     def step(frac, label, msg="", **kw):  # frac = 0..1 of this chunk
         progress(STAGE, label, chunk=idx, total=total, msg=msg or key,
                  fraction=FINAL_SHARE * (idx - 1 + frac) / total, **kw)
 
     tmpl_name = chunk.get("video_tmpl") or DEFAULT_TMPL
-    if tmpl_name not in settings:
-        raise ValueError(f"Unknown video_tmpl: {tmpl_name}")
-    tmpl = settings[tmpl_name]
+    tmpl = get_template(tmpl_name)
     w, h = even(tmpl["width"]), even(tmpl["height"])
-    lay = layout_for(tmpl, w, h)
+    tmpl = {**tmpl, "width": w, "height": h}
+    regions = pixel_regions(tmpl, w, h)
+    mx, my, mw, mh = regions["main"]
 
     duration = probe_duration(chunk["audio"])
 
-    # stock visuals for this chunk, saved in their own folder
+    # beats: the voice-over cut into phrases with exact times (caption + visual change together)
+    step(0.0, "beats", "cutting the voice-over into beats")
+    beats = make_beats(chunk["audio"], duration, tmpl["beat_max_words"], tmpl["beat_max_seconds"], chunk.get("words"))
+    if not beats:  # no speech found: one beat for the whole chunk
+        beats = [{"i": 0, "text": chunk["text"], "start": 0.0, "end": duration}]
+    beats = snap_beats(beats, duration)
+
+    # one stock visual per beat, matched to what is being said
     asset_name = f"{project_name}_{key}"
-    step(0.0, "visuals")
+    step(0.1, "visuals", f"{len(beats)} beats")
+    found = {}
     try:
-        get_visuals(chunk["text"], asset_name, "landscape" if w >= h else "portrait")
+        found = get_visuals(beats, asset_name, "vertical" if mh > mw else "horizontal")
     except Exception as e:
-        log.exception("get_visuals failed for %s, using the PDF's own images", asset_name)
-        step(0.0, "visuals", f"stock visuals failed ({type(e).__name__}: {e}), using the PDF's own images")
-    assets = list_assets(asset_name)
-    if assets:
-        step(0.0, "visuals", f"{len(assets)} stock files")
-    else:
-        assets = pdf_images(project_name)
-        step(0.0, "visuals", f"no stock files, using {len(assets)} image(s) from the PDF")
+        log.exception("get_visuals failed for %s", asset_name)
+        step(0.1, "visuals", f"stock visuals failed ({type(e).__name__}: {e})")
+    assets = fill_missing(beats, found, pdf_images(project_name))
+    step(0.2, "visuals", f"stock visuals for {len(found)}/{len(beats)} beats")
 
-    step(0.2, "composing", f"template {tmpl_name} ({w}x{h}), {duration:.0f}s")
-    slides = os.path.join(tmp, f"c{idx}_slideshow.mp4")
-    make_slideshow(assets, duration, w, lay["slide_h"], lay["image_w"], tmp, idx, slides)
+    step(0.25, "composing", f"template {tmpl_name} ({w}x{h}), {duration:.0f}s")
+    main = os.path.join(tmp, f"c{idx}_main.mp4")
+    make_main_track(beats, assets, mw, mh, tmp, idx, main)
 
-    step(0.35, "captions", "Whisper is listening to the audio")
-    caption = os.path.join(tmp, f"c{idx}_caption.mp4")
-    make_caption_video(chunk["audio"], lay["cap_w"], lay["cap_h"], duration, not tmpl["bg_transparent"], caption)
+    _, _, cw, ch = regions["caption"]
+    captions = make_caption_track(beats, (cw, ch), tmpl["caption_style"], tmp, idx)
 
-    # voice + (optional) background sound
+    second = None
+    if "second" in regions:
+        sx, sy, sw, sh = regions["second"]
+        clips = second_clips()
+        if clips:
+            clip = random.choice(clips)
+            spare = probe_has_duration(clip) - duration - 0.5
+            second = (sx, sy, sw, sh, clip, random.uniform(0, spare) if spare > 0 else 0.0)
+        else:
+            log.warning("template %s has a second video area but %s has no clips: it stays black", tmpl_name, SECOND_DIR)
+
     bg = next(playlist) if tmpl["bg_sound"] and playlist else None
 
     step(0.6, "rendering", f"chunk {idx}/{total}")
     out = out_path or os.path.join(tmp, f"c{idx}_final.mp4")
     part = out + ".part.mp4"  # written under another name, so a half-finished video never looks finished
     merge_chunk(
-        slides, caption, chunk["audio"], bg, duration, w, h, lay, part,
+        tmpl, regions, main, captions, second, chunk["audio"], bg, duration, part, tmp, idx,
         on_progress=lambda f: step(0.6 + 0.4 * f, "rendering", f"chunk {idx}/{total}: {f * 100:.0f}%", record=False),
     )
     os.replace(part, out)
@@ -300,15 +366,13 @@ def build_chunk(key, chunk, settings, project_name, playlist, tmp, progress=no_p
 
 
 # ---------- everything ----------
-def compile_video(json_path, progress=None):
+def compile_video(json_path, project_id:int, progress=None):
     progress = progress or no_progress
     project_name = os.path.splitext(os.path.basename(json_path))[0]
     progress(STAGE, "loading", msg=json_path, fraction=0.0)
 
     with open(json_path, encoding="utf-8") as f:
         data = json.load(f)
-    with open(SETTINGS_PATH, encoding="utf-8") as f:
-        settings = json.load(f)
     if not data:
         raise ValueError("The json has no chunks, nothing to make a video from.")
 
@@ -329,7 +393,7 @@ def compile_video(json_path, progress=None):
             target = os.path.join(out_dir, f"{safe_key}.mp4")
             try:
                 path, size = build_chunk(
-                    key, chunk, settings, chunk.get("project_name") or project_name, playlist, tmp, progress, i,
+                    key, chunk, chunk.get("project_name") or project_name, playlist, tmp, progress, i,
                     total, out_path=target,
                 )
             except Exception as e:  # one bad chunk must not throw away the videos already made
@@ -339,6 +403,7 @@ def compile_video(json_path, progress=None):
                          fraction=FINAL_SHARE * i / total)
                 continue
             videos[key] = path
+            
             sizes.append(size)
             progress(STAGE, "chunk_done", chunk=i, total=total, msg=f"{key} -> {path}",
                      fraction=FINAL_SHARE * i / total)
@@ -371,19 +436,18 @@ def compile_video(json_path, progress=None):
             ffmpeg(["-f", "concat", "-safe", "0", "-i", list_path, "-c", "copy", "-movflags", "+faststart", combined])
 
     progress(STAGE, "rendering", msg=f"done: {len(videos)} video(s) in {out_dir}", fraction=1.0)
-    
+
     with Session(engine) as session:
         db_result = update_chunk_video_url(project_name, session)
-    
+
     return {
-        "dir": out_dir,  
-        "videos": videos, 
-        "combined": combined,  
-        "failed": failed, 
+        "dir": out_dir,
+        "videos": videos,
+        "combined": combined,
+        "failed": failed,
         "status": not failed,
         "db": db_result,
     }
-    
 
 
 VIDEO_URL_PREFIX = "/videos"
@@ -391,26 +455,36 @@ VIDEO_URL_PREFIX = "/videos"
 def safe_name(key) -> str:
     return re.sub(r"[^\w.-]+", "_", str(key))
 
+
 def update_chunk_video_url(project_name: str, session: Session) -> dict:
-    project = session.exec(select(Project).where(Project.name == project_name)).first()
+    project = session.exec(select(Project).where(Project.title == project_name)).first()
     if not project:
         raise ValueError(f"Project '{project_name}' not found")
 
-    video_dir = Path(OUTPUT_VIDEO_DIR) / project_name
+    # Sanitize project_name if used in file paths
+    safe_project_dir = safe_name(project_name)
+    video_dir = Path(OUTPUT_VIDEO_DIR) / safe_project_dir
+    
     if not video_dir.is_dir():
         raise FileNotFoundError(f"Video directory not found: {video_dir}")
 
     chunks = session.exec(select(Chunk).where(Chunk.project_id == project.id)).all()
-
     updated, missing = [], []
+
     for chunk in chunks:
         filename = f"{safe_name(chunk.key)}.mp4"
-        if not (video_dir / filename).is_file():
+        file_path = video_dir / filename
+
+        if not file_path.is_file():
             missing.append(chunk.key)
             continue
-        chunk.video_url = f"{VIDEO_URL_PREFIX}/{project_name}/{filename}"
+
+        # Removed duplicate project_name and used POSIX format for URLs
+        chunk.video_url = file_path.as_posix()
         session.add(chunk)
         updated.append(chunk.key)
 
+    # Save the changes to the database
     session.commit()
-    return {"updated": updated, "missing_videos": missing}
+
+    return {"updated": updated, "missing": missing}
